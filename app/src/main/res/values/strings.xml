@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">刻记</string>
+    <string name="tile_quick_add">刻记·记一笔</string>
+    <string name="tile_screenshot_ocr">刻记·截图识账</string>
+    <string name="shortcut_quick_add_short">记一笔</string>
+    <string name="shortcut_quick_add_long">极速记一笔</string>
+    <string name="shortcut_ocr_short">截图识账</string>
+    <string name="shortcut_ocr_long">离线识别账单截图</string>
+    <string name="shortcut_import_short">导入账单</string>
+    <string name="shortcut_import_long">导入软件账单文件</string>
+</resources>

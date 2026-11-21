@@ -1,0 +1,22 @@
+# Toolchain / local machine config
+local.properties
+.superpowers/
+
+# Signing secrets (never commit release keystore or passwords)
+keystore/
+*.jks
+*.keystore
+
+# Gradle & build outputs
+.gradle/
+build/
+*/build/
+releases/
+
+# IDE & Kotlin
+.idea/
+*.iml
+.kotlin/
+captures/
+.cxx/
+*.hprof
