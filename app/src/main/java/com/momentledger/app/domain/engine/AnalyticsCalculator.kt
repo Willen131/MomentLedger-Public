@@ -7,6 +7,7 @@ import com.momentledger.app.domain.model.formatTimePeriodMinute
 import com.momentledger.app.domain.model.Category
 import com.momentledger.app.domain.model.CategoryStat
 import com.momentledger.app.domain.model.ChannelStat
+import com.momentledger.app.domain.model.DateBucket
 import com.momentledger.app.domain.model.DefaultCategories
 import com.momentledger.app.domain.model.HourlyBucket
 import com.momentledger.app.domain.model.MonthlyCalendarStats
@@ -15,10 +16,12 @@ import com.momentledger.app.domain.model.PeriodBucket
 import com.momentledger.app.domain.model.StatsMetricMode
 import com.momentledger.app.domain.model.TransactionRecord
 import com.momentledger.app.domain.model.TransactionType
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.YearMonth
+import java.time.temporal.TemporalAdjusters
 import kotlin.math.roundToLong
 
 object AnalyticsCalculator {
@@ -203,6 +206,42 @@ object AnalyticsCalculator {
         }
     }
 
+    fun computeDateBuckets(
+        transactions: List<TransactionRecord>,
+        startDate: LocalDate,
+        endDate: LocalDate,
+        mode: StatsMetricMode,
+        byWeek: Boolean = false
+    ): List<DateBucket> {
+        fun bucketStart(date: LocalDate): LocalDate =
+            if (byWeek) maxOf(startDate, date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))) else date
+
+        val totals = mutableMapOf<LocalDate, Long>()
+        val counts = mutableMapOf<LocalDate, Int>()
+        for (record in transactions) {
+            val amount = includedSignedAmount(record, mode) ?: continue
+            val date = runCatching { LocalDate.parse(record.localDate) }.getOrNull() ?: continue
+            if (date < startDate || date > endDate) continue
+            val start = bucketStart(date)
+            totals[start] = totals.getOrDefault(start, 0L) + amount
+            counts[start] = counts.getOrDefault(start, 0) + 1
+        }
+
+        return buildList {
+            var start = startDate
+            while (start <= endDate) {
+                val end = if (byWeek) {
+                    minOf(endDate, start.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)))
+                } else {
+                    start
+                }
+                add(DateBucket(start, end, totals.getOrDefault(start, 0L), counts.getOrDefault(start, 0)))
+                if (end == endDate) break
+                start = end.plusDays(1)
+            }
+        }
+    }
+
     fun computeFourPeriods(hourlyBuckets: List<HourlyBucket>): List<PeriodBucket> {
         val amounts = fourPeriodSpecs.map { spec ->
             hourlyBuckets
@@ -231,10 +270,8 @@ object AnalyticsCalculator {
     ): List<PeriodBucket> {
         val totals = LongArray(periods.size)
         for (record in transactions) {
-            if (record.hourOfDay !in 0..23) continue
             val amount = includedSignedAmount(record, mode) ?: continue
-            val time = Instant.ofEpochMilli(record.timestampMillis).atZone(zoneId)
-            val minute = record.hourOfDay * 60 + time.minute
+            val minute = minuteOfDay(record, zoneId) ?: continue
             val index = periods.indexOfFirst { minute >= it.startMinute && minute < it.endMinute }
             if (index >= 0) totals[index] += amount
         }
@@ -249,6 +286,24 @@ object AnalyticsCalculator {
                 colorHex = "#007AFF"
             )
         }
+    }
+
+    fun transactionsInTimePeriod(
+        transactions: List<TransactionRecord>,
+        period: TimePeriod,
+        mode: StatsMetricMode,
+        zoneId: ZoneId
+    ): List<TransactionRecord> {
+        val minutes = period.startMinute until period.endMinute
+        return transactions.filter { record ->
+            includedSignedAmount(record, mode) != null &&
+                minuteOfDay(record, zoneId)?.let { it in minutes } == true
+        }
+    }
+
+    private fun minuteOfDay(record: TransactionRecord, zoneId: ZoneId): Int? {
+        if (record.hourOfDay !in 0..23) return null
+        return record.hourOfDay * 60 + Instant.ofEpochMilli(record.timestampMillis).atZone(zoneId).minute
     }
 
     fun computeCategoryBreakdown(

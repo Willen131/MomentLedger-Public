@@ -12,6 +12,7 @@ import com.momentledger.app.domain.engine.AnalyticsCalculator
 import com.momentledger.app.domain.model.Category
 import com.momentledger.app.domain.model.CategoryStat
 import com.momentledger.app.domain.model.ChannelStat
+import com.momentledger.app.domain.model.DateBucket
 import com.momentledger.app.domain.model.DefaultCategories
 import com.momentledger.app.domain.model.HOUR_OF_DAY_UNKNOWN
 import com.momentledger.app.domain.model.HourlyBucket
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -51,6 +53,11 @@ sealed interface StatsDrillDown {
     data class ByCategory(
         val categoryId: String,
         val categoryName: String,
+        override val title: String
+    ) : StatsDrillDown
+
+    data class ByTimePeriod(
+        val period: TimePeriod,
         override val title: String
     ) : StatsDrillDown
 }
@@ -84,6 +91,8 @@ data class StatsUiState(
     val selectedHourTransactions: List<TransactionRecord> = emptyList(),
     val timePeriods: List<TimePeriod> = defaultTimePeriods,
     val periodBuckets: List<PeriodBucket> = emptyList(),
+    val dailyBuckets: List<DateBucket> = emptyList(),
+    val weeklyBuckets: List<DateBucket> = emptyList(),
     val categoryBreakdown: List<CategoryStat> = emptyList(),
     val channelBreakdown: List<ChannelStat> = emptyList(),
     val channelSummary: ChannelGroupSummary = ChannelGroupSummary(),
@@ -115,6 +124,7 @@ class StatsViewModel(
     private sealed interface DrillDownRequest {
         data class Hour(val hour: Int) : DrillDownRequest
         data class Category(val categoryId: String) : DrillDownRequest
+        data class Period(val index: Int) : DrillDownRequest
     }
 
     private data class PeriodWindow(
@@ -125,7 +135,6 @@ class StatsViewModel(
     )
 
     private data class ControlState(
-        val window: PeriodWindow,
         val metricMode: StatsMetricMode,
         val pinnedHour: Int?,
         val drillDownRequest: DrillDownRequest?
@@ -139,17 +148,15 @@ class StatsViewModel(
         repository.observeTransactionsInDateRange(
             startDate = window.startDate.toString(),
             endDate = window.endDate.toString()
-        )
+        ).map { window to it }
     }
 
     private val controlStateFlow = combine(
-        windowFlow,
         metricModeFlow,
         pinnedHourFlow,
         drillDownRequestFlow
-    ) { window, mode, pinnedHour, drillDown ->
+    ) { mode, pinnedHour, drillDown ->
         ControlState(
-            window = window,
             metricMode = mode,
             pinnedHour = pinnedHour,
             drillDownRequest = drillDown
@@ -161,9 +168,8 @@ class StatsViewModel(
         periodTransactionsFlow,
         repository.observeCategories(),
         preferences?.timePeriods ?: flowOf(defaultTimePeriods)
-    ) { controls, periodTransactions, categories, timePeriods ->
+    ) { controls, (window, periodTransactions), categories, timePeriods ->
         val today = todayProvider()
-        val window = controls.window
         val mode = controls.metricMode
 
         val sortedCategories = categories.sortedWith(
@@ -228,6 +234,16 @@ class StatsViewModel(
                     title = "$categoryName · 明细"
                 ) to includedTransactions.filter { it.categoryId == req.categoryId }
             }
+            is DrillDownRequest.Period -> {
+                val period = timePeriods.getOrNull(req.index)
+                val bucket = periodBuckets.getOrNull(req.index)
+                if (period == null || bucket == null) {
+                    null to emptyList()
+                } else {
+                    StatsDrillDown.ByTimePeriod(period, "${period.label} · ${bucket.hourRangeLabel} 明细") to
+                        AnalyticsCalculator.transactionsInTimePeriod(includedTransactions, period, mode, zoneId)
+                }
+            }
         }
 
         StatsUiState(
@@ -245,6 +261,10 @@ class StatsViewModel(
             selectedHourTransactions = selectedHourTransactions,
             timePeriods = timePeriods,
             periodBuckets = periodBuckets,
+            dailyBuckets = if (window.range == StatsRange.DAY) emptyList() else
+                AnalyticsCalculator.computeDateBuckets(periodTransactions, window.startDate, window.endDate, mode),
+            weeklyBuckets = if (window.range != StatsRange.MONTH) emptyList() else
+                AnalyticsCalculator.computeDateBuckets(periodTransactions, window.startDate, window.endDate, mode, byWeek = true),
             categoryBreakdown = categoryBreakdown,
             channelBreakdown = channelBreakdown,
             channelSummary = channelSummary,
@@ -343,6 +363,11 @@ class StatsViewModel(
 
     fun dismissDrillDown() {
         drillDownRequestFlow.value = null
+    }
+
+    fun selectTimePeriodForDrillDown(periodId: String) {
+        val index = periodId.toIntOrNull() ?: return
+        drillDownRequestFlow.value = DrillDownRequest.Period(index)
     }
 
     fun updateTransaction(record: TransactionRecord, learnMerchantCategory: Boolean = true) {

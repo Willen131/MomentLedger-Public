@@ -24,8 +24,8 @@ android {
         applicationId = "com.momentledger.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "2.5.1"
+        versionCode = 14
+        versionName = "2.5.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

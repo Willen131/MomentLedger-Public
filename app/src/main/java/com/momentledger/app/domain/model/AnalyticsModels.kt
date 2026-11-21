@@ -1,5 +1,7 @@
 package com.momentledger.app.domain.model
 
+import java.time.LocalDate
+
 enum class StatsMetricMode {
     NET_EXPENSE,
     INCOME
@@ -39,7 +41,7 @@ val defaultTimePeriods = listOf(
 )
 
 fun areValidTimePeriods(periods: List<TimePeriod>): Boolean {
-    if (periods.size != defaultTimePeriods.size || periods.any {
+    if (periods.isEmpty() || periods.any {
             it.label.isBlank() || it.startMinute !in 0..1439 || it.endMinute !in 1..1440 ||
                 it.startMinute >= it.endMinute
         }) return false
@@ -75,6 +77,13 @@ data class HourlyBucket(
     val transactionCount: Int,
     val hasRefund: Boolean,
     val isPeak: Boolean
+)
+
+data class DateBucket(
+    val startDate: LocalDate,
+    val endDate: LocalDate,
+    val amountCents: Long,
+    val transactionCount: Int
 )
 
 data class PeriodBucket(

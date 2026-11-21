@@ -698,14 +698,16 @@ class LedgerRepository(
                 matchedExistingIdsInBatch.addAll(dedupMatch.matchedExistingIds)
             }
 
+            val requiresOcrCheck = needsVerificationFlags.getOrElse(index) { false }
             reviewItems += ImportReviewItem(
                 draftId = UUID.randomUUID().toString(),
                 record = draftRecord,
-                selected = (dedupMatch.status == ImportDuplicateStatus.NEW && !dedupMatch.needsVerification) || dedupMatch.autoSelect,
+                selected = !requiresOcrCheck &&
+                    ((dedupMatch.status == ImportDuplicateStatus.NEW && !dedupMatch.needsVerification) || dedupMatch.autoSelect),
                 duplicateStatus = dedupMatch.status,
                 matchedExistingId = dedupMatch.matchedExistingId,
                 duplicateHint = dedupMatch.hint,
-                needsVerification = dedupMatch.needsVerification || needsVerificationFlags.getOrElse(index) { false },
+                needsVerification = dedupMatch.needsVerification || requiresOcrCheck,
                 userEdited = false,
                 categoryManuallyChanged = false
             )
@@ -805,6 +807,7 @@ class LedgerRepository(
             val parsed = parsedItems[index]
             if (parsed.type != TransactionType.TRANSFER) continue
             val item = reviewItems[index]
+            if (parsed.source == CaptureSource.OCR && item.needsVerification) continue
             if (item.reconciliation != null) continue
             if (item.duplicateStatus != ImportDuplicateStatus.DUPLICATE_SKIP) continue
             val originalId = item.matchedExistingId ?: continue

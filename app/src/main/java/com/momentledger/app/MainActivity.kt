@@ -87,6 +87,7 @@ import com.momentledger.app.ui.stats.StatsScreen
 import com.momentledger.app.ui.stats.StatsViewModel
 import com.momentledger.app.ui.theme.AppleTheme
 import com.momentledger.app.ui.theme.LocalAppleColors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -420,7 +421,19 @@ private fun MomentLedgerRoot(
 
             for ((idx, uri) in safeUris.withIndex()) {
                 val ocrInput = app.screenshotOcrEngine.recognizeUri(uri)
-                val parsed = ScreenshotBillParser.parse(ocrInput, zoneId)
+                var parsed = ScreenshotBillParser.parse(ocrInput, zoneId)
+                if (parsed.detectedMode == "DETAIL" && parsed.candidates.single().needsVerification) {
+                    val retriedLines = try {
+                        app.screenshotOcrEngine.retryPaymentTime(uri, ocrInput)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    if (retriedLines.isNotEmpty()) {
+                        parsed = ScreenshotBillParser.parse(ocrInput, zoneId, retriedLines)
+                    }
+                }
                 if (parsed.rawText.isNotBlank()) {
                     val header = if (safeUris.size > 1) "【截图 ${idx + 1}】\n" else ""
                     rawTexts += "$header${parsed.rawText}"
