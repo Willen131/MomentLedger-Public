@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,11 +49,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.momentledger.app.domain.model.Category
 import com.momentledger.app.domain.model.CategoryStat
+import com.momentledger.app.domain.model.DateBucket
 import com.momentledger.app.domain.model.PaymentChannel
 import com.momentledger.app.domain.model.PeriodBucket
 import com.momentledger.app.domain.model.StatsMetricMode
@@ -63,8 +66,12 @@ import com.momentledger.app.ui.components.AppleCard
 import com.momentledger.app.ui.components.AppleLargeTopBar
 import com.momentledger.app.ui.components.AppleSegmentedControl
 import com.momentledger.app.ui.components.CategoryIconBadge
-import com.momentledger.app.ui.components.HourlyBarChart
+import com.momentledger.app.ui.components.ChartPoint
+import com.momentledger.app.ui.components.ChartType
+import com.momentledger.app.ui.components.ChartTypeButton
+import com.momentledger.app.ui.components.LedgerSeriesChart
 import com.momentledger.app.ui.components.MetricModePill
+import com.momentledger.app.ui.components.SwitchableHourlyChart
 import com.momentledger.app.ui.components.TransactionEditorSheet
 import com.momentledger.app.ui.components.TransactionTimelineRow
 import com.momentledger.app.ui.theme.LocalAppleColors
@@ -132,22 +139,36 @@ fun StatsScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Apple Health 24h Spending Rhythm Card
-        HourlyRhythmCard(
-            uiState = uiState,
-            onSelectHour = { hour ->
-                if (hour != null) {
-                    viewModel.selectHour(hour)
-                }
-            },
-            onOpenHourDrillDown = {
-                viewModel.selectHourForDrillDown(uiState.selectedHour)
-            }
-        )
+        val rhythm = if (uiState.metricMode == StatsMetricMode.INCOME) "收入节律" else "消费节律"
+        if (uiState.range == StatsRange.DAY) {
+            HourlyRhythmCard(
+                uiState = uiState,
+                onSelectHour = { hour -> if (hour != null) viewModel.selectHour(hour) },
+                onOpenHourDrillDown = { viewModel.selectHourForDrillDown(uiState.selectedHour) }
+            )
+        } else {
+            val rangeLabel = if (uiState.range == StatsRange.WEEK) "周内" else "月内"
+            DateRhythmCard("${rangeLabel}每日$rhythm", uiState.dailyBuckets)
+        }
+        if (uiState.range == StatsRange.MONTH) {
+            Spacer(modifier = Modifier.height(12.dp))
+            DateRhythmCard("月内每周$rhythm", uiState.weeklyBuckets, byWeek = true)
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        TimePeriodsCard(periods = uiState.periodBuckets, onCustomize = { periodEditorOpen = true })
+        val periodDescription = if (uiState.range == StatsRange.DAY) null else {
+            val metric = if (uiState.metricMode == StatsMetricMode.INCOME) "收入" else "净支出"
+            "${uiState.startDate} 至 ${uiState.endDate}（含首尾），合计每天同一时段的$metric。"
+        }
+        TimePeriodsCard(
+            uiState.periodBuckets,
+            periodDescription,
+            metricMode = uiState.metricMode,
+            periodStart = uiState.startDate.toString(),
+            onCustomize = { periodEditorOpen = true },
+            onOpenPeriod = { viewModel.selectTimePeriodForDrillDown(it.id) }
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -284,11 +305,8 @@ private fun HourlyRhythmCard(
     val colors = LocalAppleColors.current
     val selectedHour = uiState.selectedHour
     val bucket = uiState.selectedHourBucket
-    val overline = if (uiState.metricMode == StatsMetricMode.INCOME) {
-        "24小时收入节律"
-    } else {
-        "24小时消费节律"
-    }
+    var chartType by rememberSaveable { mutableStateOf(ChartType.BAR) }
+    val rhythm = if (uiState.metricMode == StatsMetricMode.INCOME) "收入节律" else "消费节律"
 
     AppleCard(contentPadding = PaddingValues(16.dp)) {
         Row(
@@ -297,7 +315,7 @@ private fun HourlyRhythmCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = overline,
+                text = "24小时$rhythm",
                 color = colors.subText,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold
@@ -317,6 +335,7 @@ private fun HourlyRhythmCard(
                     )
                 }
             }
+            ChartTypeButton(chartType) { chartType = it }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -372,31 +391,91 @@ private fun HourlyRhythmCard(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        HourlyBarChart(
+        SwitchableHourlyChart(
             buckets = uiState.hourlyBuckets,
+            type = chartType,
             selectedHour = uiState.selectedHour,
             onSelectHour = onSelectHour,
-            height = 132.dp,
-            allowDragScrub = true
+            height = 132.dp
         )
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        Text(
-            text = if (uiState.unknownHourCount > 0) {
-                "点击或左右滑动柱状图查看任意小时分布 · 另有 ${uiState.unknownHourCount} 笔无具体时刻的导入账单未计入分时分布"
-            } else {
-                "点击或左右滑动柱状图，查看任意小时分布"
-            },
-            color = colors.subText,
-            fontSize = 11.sp
-        )
+        val help = if (chartType == ChartType.PIE) "点击扇区或图例查看对应小时。"
+            else "点按或左右拖动，查看任意小时。"
+        val missing = if (uiState.unknownHourCount > 0) {
+            " 另有 ${uiState.unknownHourCount} 笔无具体时刻的账单未计入。"
+        } else ""
+        Text(help + missing, color = colors.subText, fontSize = 11.sp)
     }
 }
 
 @Composable
-private fun TimePeriodsCard(periods: List<PeriodBucket>, onCustomize: () -> Unit) {
+private fun DateRhythmCard(title: String, buckets: List<DateBucket>, byWeek: Boolean = false) {
     val colors = LocalAppleColors.current
+    var chartType by rememberSaveable { mutableStateOf(ChartType.BAR) }
+    var selected by rememberSaveable(buckets.firstOrNull()?.startDate?.toString(), title) { mutableStateOf<Int?>(null) }
+    val points = remember(buckets, byWeek) {
+        buckets.mapIndexed { index, bucket ->
+            val start = "${bucket.startDate.monthValue}/${bucket.startDate.dayOfMonth}"
+            val end = "${bucket.endDate.monthValue}/${bucket.endDate.dayOfMonth}"
+            ChartPoint(
+                if (start == end) start else "$start–$end",
+                bucket.amountCents,
+                if (byWeek) "第${index + 1}周" else start
+            )
+        }
+    }
+
+    AppleCard(contentPadding = PaddingValues(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                title,
+                color = colors.text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            ChartTypeButton(chartType) { chartType = it }
+        }
+        val description = if (byWeek) "按周一至周日汇总，月初和月末只计入本月日期。"
+            else "按账单日期汇总，包含没有具体时刻的账单。"
+        Text(description, color = colors.subText, fontSize = 11.sp)
+        Spacer(modifier = Modifier.height(10.dp))
+
+        val index = selected ?: buckets.indexOfFirst { it.transactionCount > 0 }
+        val bucket = buckets.getOrNull(index)
+        if (bucket != null) {
+            Text(
+                "${points[index].label} · ${AmountParser.formatYuan(bucket.amountCents)} · ${bucket.transactionCount} 笔",
+                style = TnumTextStyle(fontSize = 12.sp, color = colors.text)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+        }
+        if (buckets.none { it.transactionCount > 0 }) {
+            Text("当前周期暂无数据", color = colors.subText, fontSize = 12.sp)
+        } else {
+            LedgerSeriesChart(points, chartType, selectedIndex = index, onSelect = { selected = it }, allowDrag = true)
+        }
+    }
+}
+
+@Composable
+private fun TimePeriodsCard(
+    periods: List<PeriodBucket>,
+    description: String?,
+    metricMode: StatsMetricMode,
+    periodStart: String,
+    onCustomize: () -> Unit,
+    onOpenPeriod: (PeriodBucket) -> Unit
+) {
+    val colors = LocalAppleColors.current
+    var chartType by rememberSaveable { mutableStateOf(ChartType.BAR) }
+    var selectedPeriodId by rememberSaveable(periodStart, description, metricMode) { mutableStateOf<String?>(null) }
+    val chronologicalPeriods = remember(periods) { periods.sortedBy { it.hourRangeLabel } }
 
     AppleCard(contentPadding = PaddingValues(16.dp)) {
         Row(
@@ -404,21 +483,62 @@ private fun TimePeriodsCard(periods: List<PeriodBucket>, onCustomize: () -> Unit
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("全天六时段", color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = onCustomize) { Text("自定义", color = colors.blue) }
+            Text(
+                "全天时段",
+                color = colors.text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                selectedPeriodId = null
+                onCustomize()
+            }) { Text("自定义", color = colors.blue) }
+            ChartTypeButton(chartType) {
+                chartType = it
+                selectedPeriodId = null
+            }
+        }
+        if (description != null) {
+            Text(description, color = colors.subText, fontSize = 11.sp)
         }
         Spacer(modifier = Modifier.height(12.dp))
 
+        if (chartType != ChartType.BAR) {
+            val points = remember(chronologicalPeriods) {
+                chronologicalPeriods.map {
+                    ChartPoint("${it.label} ${it.hourRangeLabel}", it.amountCents, it.hourRangeLabel.substringBefore('–'))
+                }
+            }
+            val selectedIndex = chronologicalPeriods.indexOfFirst { it.id == selectedPeriodId }
+            val selected = chronologicalPeriods.getOrNull(selectedIndex)
+            val metric = if (metricMode == StatsMetricMode.INCOME) "收入" else "净支出"
+            val summary = selected?.let {
+                "${it.label} · ${it.hourRangeLabel} · $metric ${AmountParser.formatYuan(it.amountCents)}"
+            } ?: "点图表查看金额，点下方时段查看账单。"
+            Text(summary, style = TnumTextStyle(fontSize = 12.sp, color = colors.text))
+            Spacer(modifier = Modifier.height(8.dp))
+            LedgerSeriesChart(
+                points,
+                chartType,
+                selectedIndex = selectedIndex.takeIf { it >= 0 },
+                onSelect = { selectedPeriodId = chronologicalPeriods[it].id },
+                onSelectLegend = { onOpenPeriod(chronologicalPeriods[it]) }
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+        }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            periods.forEach { period ->
-                val barColor = parseCategoryColor(period.colorHex, colors.blue)
-                val animatedRatio by animateFloatAsState(
-                    targetValue = (period.sharePercent / 100f).coerceIn(0f, 1f),
-                    animationSpec = tween(durationMillis = 320),
-                    label = "periodBar_${period.id}"
-                )
-
-                Column(modifier = Modifier.fillMaxWidth()) {
+            val displayedPeriods = when (chartType) {
+                ChartType.BAR -> periods
+                ChartType.LINE -> chronologicalPeriods
+                ChartType.PIE -> chronologicalPeriods.filter { it.amountCents <= 0L }
+            }
+            displayedPeriods.forEach { period ->
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                        .clickable { onOpenPeriod(period) }
+                        .padding(vertical = 4.dp)
+                ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -465,25 +585,16 @@ private fun TimePeriodsCard(periods: List<PeriodBucket>, onCustomize: () -> Unit
                                     color = colors.subText
                                 )
                             )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(CircleShape)
-                            .background(colors.barTrack)
-                    ) {
-                        if (animatedRatio > 0f) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth(animatedRatio)
-                                    .fillMaxHeight()
-                                    .clip(CircleShape)
-                                    .background(barColor)
+                            Icon(
+                                Icons.Rounded.ChevronRight,
+                                contentDescription = null,
+                                tint = colors.subText,
+                                modifier = Modifier.size(15.dp)
                             )
                         }
+                    }
+                    if (chartType == ChartType.BAR) {
+                        ShareBar(period.sharePercent, parseCategoryColor(period.colorHex, colors.blue), 8.dp)
                     }
                 }
             }
@@ -497,6 +608,7 @@ private fun CategoryBreakdownCard(
     onClickCategory: (CategoryStat) -> Unit
 ) {
     val colors = LocalAppleColors.current
+    var showPie by rememberSaveable { mutableStateOf(false) }
 
     AppleCard(contentPadding = PaddingValues(16.dp)) {
         Row(
@@ -508,13 +620,17 @@ private fun CategoryBreakdownCard(
                 text = "分类占比",
                 color = colors.text,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
             )
             Text(
                 text = "点击查看明细",
                 color = colors.subText,
                 fontSize = 11.sp
             )
+            ChartTypeButton(if (showPie) ChartType.PIE else ChartType.BAR, includeLine = false) {
+                showPie = it == ChartType.PIE
+            }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -533,6 +649,11 @@ private fun CategoryBreakdownCard(
                 )
             }
         } else {
+            if (showPie) {
+                val points = remember(categories) { categories.map { ChartPoint(it.categoryName, it.amountCents) } }
+                LedgerSeriesChart(points, ChartType.PIE, onSelect = { onClickCategory(categories[it]) })
+                return@AppleCard
+            }
             Column(modifier = Modifier.fillMaxWidth()) {
                 categories.forEachIndexed { index, stat ->
                     if (index > 0) {
@@ -554,12 +675,6 @@ private fun CategoryStatRow(
     onClick: () -> Unit
 ) {
     val colors = LocalAppleColors.current
-    val catColor = parseCategoryColor(stat.colorHex, colors.blue)
-    val animatedRatio by animateFloatAsState(
-        targetValue = (stat.sharePercent / 100f).coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 320),
-        label = "catBar_${stat.categoryId}"
-    )
 
     Row(
         modifier = Modifier
@@ -629,24 +744,23 @@ private fun CategoryStatRow(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(CircleShape)
-                    .background(colors.barTrack)
-            ) {
-                if (animatedRatio > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(animatedRatio)
-                            .fillMaxHeight()
-                            .clip(CircleShape)
-                            .background(catColor)
-                    )
-                }
-            }
+            ShareBar(stat.sharePercent, parseCategoryColor(stat.colorHex, colors.blue), 6.dp)
+        }
+    }
+}
+
+@Composable
+private fun ShareBar(percent: Int, color: Color, height: Dp) {
+    val colors = LocalAppleColors.current
+    val ratio by animateFloatAsState(
+        targetValue = (percent / 100f).coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 320),
+        label = "shareBar"
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Box(Modifier.fillMaxWidth().height(height).clip(CircleShape).background(colors.barTrack)) {
+        if (ratio > 0f) {
+            Box(Modifier.fillMaxWidth(ratio).fillMaxHeight().clip(CircleShape).background(color))
         }
     }
 }

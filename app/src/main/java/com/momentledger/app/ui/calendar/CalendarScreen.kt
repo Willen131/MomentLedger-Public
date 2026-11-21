@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +51,9 @@ import com.momentledger.app.domain.parser.AmountParser
 import com.momentledger.app.ui.components.AppleCard
 import com.momentledger.app.ui.components.AppleLargeTopBar
 import com.momentledger.app.ui.components.AppleSegmentedControl
-import com.momentledger.app.ui.components.HourlyBarChart
+import com.momentledger.app.ui.components.ChartType
+import com.momentledger.app.ui.components.ChartTypeButton
+import com.momentledger.app.ui.components.SwitchableHourlyChart
 import com.momentledger.app.ui.components.TransactionEditorSheet
 import com.momentledger.app.ui.components.TransactionTimelineRow
 import com.momentledger.app.ui.theme.LocalAppleColors
@@ -413,8 +416,11 @@ private fun SelectedDayHourlyCard(
     val selectedDate = uiState.selectedDate
     val selectedHour = uiState.selectedHour
     val metricMode = uiState.metricMode
+    var chartType by rememberSaveable { mutableStateOf(ChartType.BAR) }
     val subtitleText = if (selectedHour != null) {
-        "已筛选 ${hourRangeLabel(selectedHour)} · 拖动切换"
+        "已筛选 ${hourRangeLabel(selectedHour)}"
+    } else if (chartType == ChartType.PIE) {
+        "点按扇区或图例，查看分布"
     } else {
         "点按或左右拖动，查看${metricMode.label}分布"
     }
@@ -464,16 +470,17 @@ private fun SelectedDayHourlyCard(
                     )
                 )
             }
+            ChartTypeButton(chartType) { chartType = it }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        HourlyBarChart(
+        SwitchableHourlyChart(
             buckets = uiState.selectedDayHourlyBuckets,
+            type = chartType,
             selectedHour = uiState.selectedHour,
             onSelectHour = onSelectHour,
             height = 84.dp,
-            allowDragScrub = true,
             calendarStyle = true
         )
     }

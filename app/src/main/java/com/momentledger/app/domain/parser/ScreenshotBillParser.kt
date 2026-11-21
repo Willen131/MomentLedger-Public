@@ -58,8 +58,11 @@ object ScreenshotBillParser {
 
     private data class ExtractedTime(
         val timestampMillis: Long,
-        val hasTimeOfDay: Boolean
+        val hasTimeOfDay: Boolean,
+        val hasDate: Boolean = true
     )
+
+    private data class DetailField(val label: String, val value: String)
 
     private data class ExtractedAmount(
         val amountCents: Long,
@@ -85,6 +88,7 @@ object ScreenshotBillParser {
     )
     private val plainDecimalRegex = Regex("""^([+\-＋－])?\s*(\d[\d,]*\.\d{1,2})$""")
     private val currencyOnlySet = setOf("¥", "￥")
+    private val misreadMinus = Regex("""^[一—–−](?=\s*[¥￥]?\s*\d[\d,]*\.\d{1,2}\s*元?$)""")
 
     private val fullDateTimeRegex = Regex(
         """(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})日?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?"""
@@ -99,6 +103,14 @@ object ScreenshotBillParser {
     private val relativeDayTimeRegex = Regex("""(今天|今日|昨天|昨日|前天)\s*(\d{1,2}):(\d{2})(?::(\d{2}))?""")
     private val relativeDayOnlyRegex = Regex("""^(今天|今日|昨天|昨日|前天)$""")
     private val timeOnlyRegex = Regex("""^(\d{1,2}):(\d{2})(?::(\d{2}))?$""")
+    private val detailDatePrefix = Regex("""^(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})(?!\d)日?""")
+    private val detailTimeSeparators = Regex("""\s*([年月日:/.-])\s*""")
+    private val misreadTimeOne = Regex("""[|｜丨│IlＩｌ一]""")
+    private val clockPrefix = Regex(
+        """^[\dIl|]{1,2}\s*[:：∶]\s*[\dIl|]{2}(?=[\d\s:：∶)）]|中国(?:移动|联通|电信)|$)"""
+    )
+    private val statusIndicators = Regex("""(?i)^(?:[345]G|LTE|Wi-?Fi)(?:[345]G|\d{1,3}[%％])*$""")
+    private val detailClockPrefix = Regex("""^(\d{1,2}):(\d{2})(?::(\d{2}))?(?=$|\s|[（(])""")
 
     private val detailAnchors = setOf(
         "支付成功", "付款成功", "支付完成", "交易成功", "转账成功", "已转账", "已支付",
@@ -113,7 +125,7 @@ object ScreenshotBillParser {
     private val singleDetailGuardKeywords = listOf(
         "订单详情", "账单详情", "交易详情", "商品总价", "店铺优惠", "实付款", "实付金额",
         "合计实付", "打包费", "配送费", "待朋友收款", "你已收款", "已存入你的零钱",
-        "付款时间", "转账时间", "收款时间", "订单编号", "交易单号"
+        "付款时间", "支付时间", "转账时间", "收款时间", "订单编号", "交易单号", "商户全称"
     )
 
     private val actualPaidLabels = setOf(
@@ -148,9 +160,18 @@ object ScreenshotBillParser {
     )
 
     private val merchantLabels = setOf(
-        "店铺", "店铺名称", "商户名称", "收款商户", "商家名称", "商家", "商户",
+        "店铺", "店铺名称", "商户全称", "商家全称", "商户名称", "收款商户", "商家名称", "商家", "商户",
         "收款方", "交易对方", "对方账户", "对方户名", "收款人", "门店", "付款给", "转账给", "来自"
     )
+    private val detailLabelAliases = mapOf(
+        "商广全称" to "商户全称",
+        "商戸全称" to "商户全称",
+        "商戶全稱" to "商户全称",
+        "收草机构" to "收单机构"
+    )
+    private val alipayAutoPayManagement = Regex("""管理[免兌兑兒儿]密支付""")
+    private val savingsCardMisread = Regex("""储[首音畜]卡""")
+    private val cardTailMissingOpening = Regex("""卡\s*(\d{4})[)）]$""")
 
     private val fundingLabels = setOf(
         "支付方式", "付款方式", "扣款方式", "扣款账户", "支付账户", "收/付款方式", "资金来源"
@@ -175,8 +196,17 @@ object ScreenshotBillParser {
         "极速退款", "退换货", "再来一单", "评价", "去评价",
         "查看物流", "删除订单", "开发票", "申请开票", "查看零钱", "重发转账消息", "定位到聊天位置",
         "支付成功", "付款成功", "交易成功", "订单已完成", "已完成", "微信支付", "支付宝", "云闪付",
-        "账单", "全部账单", "筛选", "统计", "搜索"
+        "账单", "全部账单", "筛选", "统计", "搜索", "账单服务", "发起群收款", "申请电子凭证",
+        "本服务由财付通提供", "账单详情全部账单"
     )
+
+    private val primaryTimeLabels = setOf("支付时间", "付款时间", "交易时间", "转账时间", "收款时间", "退款时间")
+    private val detailFieldRegex = (merchantLabels + detailLabelAliases.keys + fundingLabels + timeLabels + primaryTimeLabels + priorityAmountLabels +
+        orderIdLabels + otherLabels + setOf("商品", "收单机构")).sortedByDescending { it.length }
+        .joinToString("|", prefix = """^[\s|｜丨│1Il]*(""", postfix = ")") { label ->
+            label.map { Regex.escape(it.toString()) }.joinToString("""\s*""") +
+                if (label.length <= 2) """(?=\s|[:：]|$)""" else ""
+        }.toRegex()
 
     private val platformLabels: List<Pair<String, PaymentChannel>> = listOf(
         "美团外卖" to PaymentChannel.OTHER,
@@ -244,7 +274,8 @@ object ScreenshotBillParser {
 
     fun parse(
         input: OcrImageInput,
-        zoneId: ZoneId = ZoneId.systemDefault()
+        zoneId: ZoneId = ZoneId.systemDefault(),
+        paymentTimeRetry: List<OcrLine> = emptyList()
     ): ScreenshotBillParseResult {
         val dedupLines = deduplicateTiledOcrLines(input.lines)
         if (dedupLines.isEmpty()) {
@@ -264,7 +295,7 @@ object ScreenshotBillParser {
             )
         }
 
-        val detailCandidate = tryParseDetailMode(visualRows, rawText, fallbackDateTime, zoneId)
+        val detailCandidate = tryParseDetailMode(visualRows, rawText, fallbackDateTime, zoneId, paymentTimeRetry)
         if (detailCandidate != null) {
             return ScreenshotBillParseResult(
                 candidates = listOf(detailCandidate),
@@ -517,25 +548,41 @@ object ScreenshotBillParser {
         rows: List<VisualRow>,
         rawText: String,
         fallbackDateTime: java.time.ZonedDateTime,
-        zoneId: ZoneId
+        zoneId: ZoneId,
+        paymentTimeRetry: List<OcrLine>
     ): ScreenshotParsedCandidate? {
         val tokens = flattenAndMergeCurrencyTokens(rows)
         if (tokens.isEmpty()) return null
 
-        val platform = detectPlatformAndChannel(rawText)
+        val fields = detailFields(rows)
+        val receiptPlatform = when {
+            hasWechatReceiptFooter(rawText) -> "微信支付" to PaymentChannel.WECHAT
+            hasAlipayDetailLayout(rawText, fields) -> "支付宝" to PaymentChannel.ALIPAY
+            else -> null
+        }
+        val platform = receiptPlatform ?: detectPlatformAndChannel(rawText)
         val hasDetailAnchor = tokens.any { token ->
             val norm = trailingPunctRegex.replace(token, "")
             val label = splitColon(token)?.first
             norm in detailAnchors ||
                 (label != null && label in detailAnchors) ||
                 detailAnchors.any { anchor -> norm.contains(anchor) }
-        } || platform.first != null
+        } || platform.first != null || fields.any { it.label in primaryTimeLabels || it.label == "商户全称" }
 
         if (!hasDetailAnchor) return null
 
         val extractedAmount = extractDetailAmount(rows, tokens) ?: return null
-        val extractedTime = extractDetailTimestamp(tokens, fallbackDateTime, zoneId)
-        val fundingMethod = extractFundingMethod(tokens, platform)
+        val firstTime = extractDetailTimestamp(rows, fields, fallbackDateTime, zoneId)
+        val extractedTime = if (paymentTimeRetry.isNotEmpty() && (!firstTime.hasTimeOfDay || !firstTime.hasDate)) {
+            val retriedRows = clusterIntoVisualRows(paymentTimeRetry)
+            val retriedTime = extractDetailTimestamp(retriedRows, detailFields(retriedRows), fallbackDateTime, zoneId)
+            val sameDate = !firstTime.hasDate || Instant.ofEpochMilli(retriedTime.timestampMillis).atZone(zoneId).toLocalDate() ==
+                Instant.ofEpochMilli(firstTime.timestampMillis).atZone(zoneId).toLocalDate()
+            if (retriedTime.hasDate && retriedTime.hasTimeOfDay && sameDate) retriedTime else firstTime
+        } else firstTime
+        val fundingMethod = fields.asSequence().filter { it.label in fundingLabels }
+            .mapNotNull { validFundingLabel(it.value) }
+            .firstOrNull() ?: extractFundingMethod(tokens, platform)
         val orderId = extractOrderId(tokens)
 
         val txType = resolveDetailTransactionType(
@@ -546,17 +593,22 @@ object ScreenshotBillParser {
 
         val merchantAndExtra = extractDetailMerchant(
             tokens = tokens,
+            rows = rows,
+            fields = fields,
+            amountCents = extractedAmount.amountCents,
+            preferReceiptHeading = receiptPlatform != null,
             platformName = platform.first,
             channel = platform.second,
             fundingMethod = fundingMethod,
             txType = txType
         )
 
-        val note = buildNote(
-            platformName = platform.first,
-            merchant = merchantAndExtra.first,
-            extra = merchantAndExtra.second
-        )
+        val explicitNote = fields.firstOrNull {
+            (it.label == "备注" || it.label == "转账说明") &&
+                !isScreenshotChrome(it.value) && readDetailField(it.value) == null
+        }?.value
+        val extra = explicitNote ?: if (receiptPlatform != null) "" else merchantAndExtra.second
+        val note = buildNote(platform.first, merchantAndExtra.first, extra)
 
         return ScreenshotParsedCandidate(
             payment = ParsedPayment(
@@ -571,7 +623,7 @@ object ScreenshotBillParser {
                 note = note,
                 hasTimeOfDay = extractedTime.hasTimeOfDay
             ),
-            needsVerification = false
+            needsVerification = !extractedTime.hasDate || !extractedTime.hasTimeOfDay
         )
     }
 
@@ -600,7 +652,7 @@ object ScreenshotBillParser {
         val merchant = tokens.firstOrNull { token ->
             !isStandaloneAmountToken(token) &&
                 parseInlineCurrencyAmount(token) == null &&
-                token !in uiChromeWords &&
+                !isScreenshotChrome(token) &&
                 !longNumericIdRegex.matches(token) &&
                 parseTimeExpression(
                     text = token,
@@ -611,7 +663,7 @@ object ScreenshotBillParser {
                 ) == null
         } ?: "待确认消费"
 
-        val extractedTime = extractDetailTimestamp(tokens, fallbackDateTime, zoneId)
+        val extractedTime = extractDetailTimestamp(rows, detailFields(rows), fallbackDateTime, zoneId)
         val txType = resolvedAmount.signHint ?: TransactionType.EXPENSE
 
         return ScreenshotParsedCandidate(
@@ -652,7 +704,7 @@ object ScreenshotBillParser {
     }
 
     private fun parseListAmountToken(token: String): ExtractedAmount? {
-        val trimmed = token.trim()
+        val trimmed = misreadMinus.replace(token.trim(), "-")
         signedStandaloneAmountRegex.matchEntire(trimmed)?.let { match ->
             val sign = if (match.groupValues[1] in setOf("+", "＋")) TransactionType.INCOME else TransactionType.EXPENSE
             val cents = AmountParser.parseToCents(match.groupValues[2]) ?: return null
@@ -819,47 +871,97 @@ object ScreenshotBillParser {
     private fun isStandaloneAmountToken(token: String): Boolean =
         parseStandaloneAmount(token) != null
 
+    private fun readDetailField(text: String): DetailField? {
+        val match = detailFieldRegex.find(text) ?: return null
+        val label = whitespaceRegex.replace(match.groupValues[1], "")
+        val value = text.substring(match.range.last + 1).trimStart { it.isWhitespace() || it == ':' || it == '：' }
+        return DetailField(detailLabelAliases[label] ?: label, value)
+    }
+
+    private fun detailFields(rows: List<VisualRow>): List<DetailField> = rows.mapIndexedNotNull { index, row ->
+        val field = readDetailField(row.joinedText) ?: return@mapIndexedNotNull null
+        val next = adjacentFieldValue(rows, index)
+        if (field.value.isEmpty() && next != null) {
+            field.copy(value = next.joinedText)
+        } else field
+    }
+
+    private fun adjacentFieldValue(rows: List<VisualRow>, index: Int): VisualRow? {
+        val row = rows[index]
+        return rows.getOrNull(index + 1)?.takeIf {
+            it.top - row.bottom <= maxOf(row.bottom - row.top, it.bottom - it.top) &&
+                readDetailField(it.joinedText) == null
+        }
+    }
+
+    internal fun paymentTimeRegion(input: OcrImageInput): OcrLine? {
+        val rows = clusterIntoVisualRows(input.lines)
+        val fields = rows.mapIndexedNotNull { index, row ->
+            readDetailField(row.joinedText)?.takeIf { it.label in timeLabels || it.label in primaryTimeLabels }
+                ?.let { index to it }
+        }
+        val (index, field) = fields.firstOrNull { it.second.label in primaryTimeLabels }
+            ?: fields.firstOrNull() ?: return null
+        val row = rows[index]
+        val bottom = if (field.value.isEmpty()) adjacentFieldValue(rows, index)?.bottom ?: row.bottom else row.bottom
+        return OcrLine("", 0, row.top, input.imageWidth, bottom)
+    }
+
     private fun extractDetailTimestamp(
-        tokens: List<String>,
+        rows: List<VisualRow>,
+        fields: List<DetailField>,
         fallbackDateTime: java.time.ZonedDateTime,
         zoneId: ZoneId
     ): ExtractedTime {
         val fallbackDate = fallbackDateTime.toLocalDate()
         val fallbackYm = YearMonth.from(fallbackDate)
-
-        // First check explicitly labeled time tokens
-        for (i in tokens.indices) {
-            val token = tokens[i]
-            val pair = splitColon(token)
-            if (pair != null && pair.first in timeLabels && pair.second.isNotEmpty()) {
-                parseTimeExpression(pair.second, fallbackYm, null, fallbackDate, zoneId)?.let { return it }
-            }
-            val norm = trailingPunctRegex.replace(token, "")
-            if (norm in timeLabels) {
-                tokens.getOrNull(i + 1)?.let { next ->
-                    parseTimeExpression(next, fallbackYm, null, fallbackDate, zoneId)?.let { return it }
+        fun parseValue(value: String, labeled: Boolean): ExtractedTime? {
+            val normalized = detailTimeSeparators.replace(misreadTimeOne.replace(value.trim(), "1").replace('：', ':')) {
+                if (it.groupValues[1] == "日") "日 " else it.groupValues[1]
+            }.trim()
+            detailDatePrefix.find(normalized)?.let { dateMatch ->
+                val date = safeLocalDate(
+                    dateMatch.groupValues[1].toIntOrNull(),
+                    dateMatch.groupValues[2].toIntOrNull(),
+                    dateMatch.groupValues[3].toIntOrNull()
+                ) ?: return null
+                val clock = normalized.substring(dateMatch.range.last + 1).trim()
+                val time = detailClockPrefix.find(clock)?.let {
+                    safeLocalTime(it.groupValues[1].toIntOrNull(), it.groupValues[2].toIntOrNull(),
+                        it.groupValues[3].toIntOrNull() ?: 0)
                 }
+                return ExtractedTime(date.atTime(time ?: LocalTime.NOON).atZone(zoneId).toInstant().toEpochMilli(), time != null)
             }
-            for (label in timeLabels) {
-                if (token.startsWith(label) && token.length > label.length) {
-                    parseTimeExpression(token.removePrefix(label).trim(), fallbackYm, null, fallbackDate, zoneId)
-                        ?.let { return it }
-                }
+            if (labeled && timeOnlyRegex.matches(normalized)) {
+                return parseTimeExpression(normalized, fallbackYm, null, fallbackDate, zoneId)?.copy(hasDate = false)
             }
+            if (relativeDayOnlyRegex.matches(normalized) ||
+                relativeDayTimeRegex.matchEntire(normalized) != null ||
+                monthDayOnlyRegex.matches(normalized) ||
+                monthDayTimeRegex.matchEntire(normalized) != null
+            ) {
+                return parseTimeExpression(normalized, fallbackYm, null, fallbackDate, zoneId)
+            }
+            return null
         }
 
-        // Next check any full date-time line, then date-only line
-        var dateOnlyFallback: ExtractedTime? = null
-        for (token in tokens) {
-            val parsed = parseTimeExpression(token, fallbackYm, null, fallbackDate, zoneId) ?: continue
-            if (parsed.hasTimeOfDay) return parsed
-            if (dateOnlyFallback == null) dateOnlyFallback = parsed
+        val primary = fields.filter { it.label in primaryTimeLabels }
+        val labeled = primary.ifEmpty { fields.filter { it.label in timeLabels } }
+            .mapNotNull { parseValue(it.value, labeled = true) }
+        // An explicit transaction date outranks an unrelated clock or order creation time.
+        labeled.firstOrNull { it.hasDate }?.let { return it }
+        if (primary.isEmpty()) {
+            val unlabeled = rows.mapNotNull { parseValue(it.joinedText, labeled = false) }
+            if (unlabeled.isNotEmpty()) {
+                return unlabeled.firstOrNull { it.hasTimeOfDay } ?: unlabeled.first()
+            }
         }
-        if (dateOnlyFallback != null) return dateOnlyFallback
+        labeled.firstOrNull()?.let { return it }
 
         return ExtractedTime(
             fallbackDate.atTime(12, 0, 0).atZone(zoneId).toInstant().toEpochMilli(),
-            hasTimeOfDay = false
+            hasTimeOfDay = false,
+            hasDate = false
         )
     }
 
@@ -984,6 +1086,9 @@ object ScreenshotBillParser {
                 return label to channel
             }
         }
+        if (hasWechatReceiptFooter(text)) {
+            return "微信支付" to PaymentChannel.WECHAT
+        }
         for (bankName in PaymentPackages.defaultBankPackages.values) {
             if (text.contains(bankName)) {
                 return bankName to PaymentChannel.BANK
@@ -995,6 +1100,27 @@ object ScreenshotBillParser {
         return null to PaymentChannel.OTHER
     }
 
+    private fun hasWechatReceiptFooter(text: String): Boolean =
+        whitespaceRegex.replace(text, "").contains("本服务由财付通提供")
+
+    private fun hasAlipayDetailLayout(text: String, fields: List<DetailField>): Boolean {
+        if (fields.none { it.label == "付款方式" } || fields.none { it.label == "支付时间" }) return false
+        val compact = whitespaceRegex.replace(text, "")
+        return (alipayAutoPayManagement.containsMatchIn(compact) &&
+            (compact.contains("自动扣款成功") || compact.contains("查看扣款顺序"))) ||
+            (compact.contains("支付奖励") && compact.contains("账单管理"))
+    }
+
+    private fun validFundingLabel(value: String): String? {
+        val cleaned = value.trim().trimStart('|', '｜', '丨', '│', ' ')
+            .trimEnd('>', '＞', '〉', '›', '»', ' ')
+        if (isScreenshotChrome(cleaned) || readDetailField(cleaned) != null || isStandaloneAmountToken(cleaned)) {
+            return null
+        }
+        val card = savingsCardMisread.replace(cleaned, "储蓄卡")
+        return cardTailMissingOpening.replace(card) { "卡(${it.groupValues[1]})" }
+    }
+
     private fun extractFundingMethod(
         tokens: List<String>,
         platform: Pair<String?, PaymentChannel>
@@ -1002,15 +1128,13 @@ object ScreenshotBillParser {
         for (i in tokens.indices) {
             val token = tokens[i]
             val pair = splitColon(token)
-            if (pair != null && pair.first in fundingLabels && pair.second.isNotEmpty()) {
-                return pair.second
+            if (pair != null && pair.first in fundingLabels) {
+                validFundingLabel(pair.second)?.let { return it }
             }
             val norm = trailingPunctRegex.replace(token, "")
             if (norm in fundingLabels) {
                 val next = tokens.getOrNull(i + 1)
-                if (next != null && next !in uiChromeWords && !isStandaloneAmountToken(next)) {
-                    return next
-                }
+                next?.let(::validFundingLabel)?.let { return it }
             }
         }
         tokens.firstOrNull { standaloneFundingRegex.matches(it) }?.let { return it }
@@ -1061,12 +1185,27 @@ object ScreenshotBillParser {
 
     private fun extractDetailMerchant(
         tokens: List<String>,
+        rows: List<VisualRow>,
+        fields: List<DetailField>,
+        amountCents: Long,
+        preferReceiptHeading: Boolean,
         platformName: String?,
         channel: PaymentChannel,
         fundingMethod: String,
         txType: TransactionType
     ): Pair<String, String> {
         val labeledValueIndices = collectSkipValueIndices(tokens)
+        val merchant = fields.filter { it.label in merchantLabels }
+            .sortedBy { if (it.label == "商户全称" || it.label == "商家全称") 0 else 1 }
+            .map { it.value.trimStart('|', '｜', '丨', '│', ' ') }
+            .firstOrNull { isUsableMerchant(it, platformName, fundingMethod) }
+        if (merchant != null) {
+            val index = tokens.indexOfLast { it == merchant || readDetailField(it)?.value == merchant }
+            val secondary = if (index >= 0) {
+                findSecondaryItemTitle(tokens, index, labeledValueIndices, merchant, platformName, fundingMethod)
+            } else ""
+            return merchant to secondary
+        }
 
         // 1. Explicitly labeled merchant/store
         for (i in tokens.indices) {
@@ -1084,6 +1223,20 @@ object ScreenshotBillParser {
                     return next to secondary
                 }
             }
+        }
+
+        // Wallet receipt layouts put the merchant immediately above the headline amount.
+        if (preferReceiptHeading) {
+            val amountRow = rows.indexOfFirst { row ->
+                val field = readDetailField(row.joinedText)?.takeIf { it.label in priorityAmountLabels }
+                parseStandaloneAmount(field?.value ?: row.joinedText)?.amountCents == amountCents
+            }
+            val heading = if (amountRow > 0) {
+                rows.subList(0, amountRow).asReversed().firstOrNull {
+                    isUsableMerchant(it.joinedText, platformName, fundingMethod)
+                }?.joinedText
+            } else null
+            if (heading != null) return heading to ""
         }
 
         // 2. First clean non-label, non-chrome candidate token
@@ -1130,9 +1283,16 @@ object ScreenshotBillParser {
 
     private fun collectSkipValueIndices(tokens: List<String>): Set<Int> {
         val allNonMerchantLabels = priorityAmountLabels + noiseAmountLabels + fundingLabels +
-            orderIdLabels + timeLabels + otherLabels
+            orderIdLabels + timeLabels + otherLabels + "收单机构"
         val indices = mutableSetOf<Int>()
         for (i in tokens.indices) {
+            val field = readDetailField(tokens[i])
+            if (field != null && field.label in allNonMerchantLabels) {
+                indices += i
+                val next = tokens.getOrNull(i + 1)
+                if (field.value.isEmpty() && next != null && readDetailField(next) == null) indices += (i + 1)
+                continue
+            }
             val pair = splitColon(tokens[i])
             if (pair != null && pair.first in allNonMerchantLabels) {
                 indices += i
@@ -1155,7 +1315,7 @@ object ScreenshotBillParser {
     ): Boolean {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.length > 48) return false
-        if (trimmed in uiChromeWords) return false
+        if (isScreenshotChrome(trimmed) || readDetailField(trimmed) != null) return false
         val norm = trailingPunctRegex.replace(trimmed, "")
         if (norm in detailAnchors || norm in priorityAmountLabels || norm in noiseAmountLabels ||
             norm in fundingLabels || norm in orderIdLabels || norm in timeLabels || norm in otherLabels
@@ -1177,6 +1337,15 @@ object ScreenshotBillParser {
         if (fullDateTimeRegex.containsMatchIn(trimmed) || fullDateOnlyRegex.containsMatchIn(trimmed)) return false
         if (noiseAmountLineRegex.containsMatchIn(trimmed)) return false
         return true
+    }
+
+    private fun isScreenshotChrome(text: String): Boolean {
+        val trimmed = text.trim()
+        val heading = whitespaceRegex.replace(trimmed, "")
+            .trim('×', '✕', '✖', 'X', 'x', '|', '｜', '!', '！', '<', '＜', '〈', '‹')
+        return heading.isEmpty() || heading in uiChromeWords ||
+            trimmed.none { it.isLetterOrDigit() } || clockPrefix.containsMatchIn(trimmed) ||
+            statusIndicators.matches(heading)
     }
 
     private fun buildNote(platformName: String?, merchant: String, extra: String): String {

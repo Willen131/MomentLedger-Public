@@ -251,6 +251,64 @@ class ScreenshotOcrEngine(context: Context) {
         }
     }
 
+    internal suspend fun retryPaymentTime(uri: Uri, input: OcrImageInput): List<OcrLine> = withContext(Dispatchers.IO) {
+        val field = ScreenshotBillParser.paymentTimeRegion(input) ?: return@withContext emptyList()
+        val padding = (field.height * 2).coerceAtMost(120)
+        val top = (field.top - padding).coerceIn(0, input.imageHeight)
+        val bottom = (field.bottom + padding).coerceIn(0, input.imageHeight)
+        if (bottom <= top || bottom - top > input.imageHeight / 6) return@withContext emptyList()
+
+        val bytes = readUriBytesBounded(uri)
+        if (bytes.isEmpty()) return@withContext emptyList()
+        val rotation = readExifRotationDegrees(bytes)
+        val decoder = openRegionDecoder(bytes) ?: return@withContext emptyList()
+        val rawStrip = try {
+            val rotated = rotation == 90 || rotation == 270
+            val orientedWidth = if (rotated) decoder.height else decoder.width
+            val orientedHeight = if (rotated) decoder.width else decoder.height
+            val rawRect = ScreenshotTilingPlanner.mapOrientedStripToRawRect(
+                decoder.width, decoder.height, rotation,
+                (top.toLong() * orientedHeight / input.imageHeight).toInt(),
+                ((bottom.toLong() * orientedHeight + input.imageHeight - 1) / input.imageHeight).toInt()
+            )
+            val width = rawRect.right - rawRect.left
+            val height = rawRect.bottom - rawRect.top
+            var sampleSize = ScreenshotTilingPlanner.computeSampleSizeForWidth(orientedWidth)
+            while ((width / sampleSize).toLong() * (height / sampleSize) > MAX_TIME_RETRY_PIXELS) {
+                sampleSize *= 2
+            }
+            decoder.decodeRegion(
+                Rect(rawRect.left, rawRect.top, rawRect.right, rawRect.bottom),
+                BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+            )
+        } catch (_: OutOfMemoryError) {
+            return@withContext emptyList()
+        } finally {
+            decoder.recycle()
+        } ?: return@withContext emptyList()
+
+        val retryBitmap = try {
+            rotateBitmapIfNeeded(rawStrip, rotation)
+        } catch (_: OutOfMemoryError) {
+            return@withContext emptyList()
+        } finally {
+            if (rotation != 0) rawStrip.recycle()
+        }
+        recognizeBitmapOwned(retryBitmap)
+    }
+
+    private fun openRegionDecoder(bytes: ByteArray): BitmapRegionDecoder? = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            BitmapRegionDecoder.newInstance(bytes, 0, bytes.size)
+        } else {
+            @Suppress("DEPRECATION")
+            BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
+        }
+    }.getOrNull()
+
     private suspend fun recognizeViaRegionDecoder(
         rawBytes: ByteArray,
         rawWidth: Int,
@@ -259,14 +317,7 @@ class ScreenshotOcrEngine(context: Context) {
         rotationDegrees: Int,
         sampleSize: Int
     ): List<OcrLine>? {
-        val decoder = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                BitmapRegionDecoder.newInstance(rawBytes, 0, rawBytes.size)
-            } else {
-                @Suppress("DEPRECATION")
-                BitmapRegionDecoder.newInstance(rawBytes, 0, rawBytes.size, false)
-            }
-        }.getOrNull() ?: return null
+        val decoder = openRegionDecoder(rawBytes) ?: return null
 
         return try {
             val rawStripHeight = ScreenshotTilingPlanner.DEFAULT_STRIP_HEIGHT * sampleSize
@@ -417,5 +468,6 @@ class ScreenshotOcrEngine(context: Context) {
         const val MAX_IMAGE_BYTES = 30L * 1024L * 1024L
         const val MAX_FALLBACK_PIXELS = 16_000_000L
         const val MAX_ROTATED_FALLBACK_PIXELS = 10_000_000L
+        const val MAX_TIME_RETRY_PIXELS = 1_000_000L
     }
 }
