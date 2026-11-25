@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="notif_pill_bg">#2E0A84FF</color>
+    <color name="notif_pill_stroke">#4D0A84FF</color>
+    <color name="notif_pill_text">#F2F2F7</color>
+</resources>

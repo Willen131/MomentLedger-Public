@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Top calendar binding pins -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M43,29A2,2 0 0,1 45,31V35A2,2 0 0,1 41,35V31A2,2 0 0,1 43,29ZM65,29A2,2 0 0,1 67,31V35A2,2 0 0,1 63,35V31A2,2 0 0,1 65,29Z" />
+
+    <!-- Minimalist calendar body with header slot & moment dial cutout -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M41,34H67A9,9 0 0,1 76,43V68A9,9 0 0,1 67,77H41A9,9 0 0,1 32,68V43A9,9 0 0,1 41,34ZM38.5,42.5H69.5A1.5,1.5 0 0,1 71,44A1.5,1.5 0 0,1 69.5,45.5H38.5A1.5,1.5 0 0,1 37,44A1.5,1.5 0 0,1 38.5,42.5ZM54,51A10,10 0 1,0 54,71A10,10 0 1,0 54,51Z" />
+
+    <!-- Crisp clock-moment hands inside dial cutout -->
+    <path
+        android:pathData="M54,55.2V61L58.4,63.6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="3.2" />
+</vector>

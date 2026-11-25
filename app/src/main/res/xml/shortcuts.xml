@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="quick_add"
+        android:shortcutLongLabel="@string/shortcut_quick_add_long"
+        android:shortcutShortLabel="@string/shortcut_quick_add_short">
+        <intent
+            android:action="com.momentledger.app.action.QUICK_ADD"
+            android:targetClass="com.momentledger.app.MainActivity"
+            android:targetPackage="com.momentledger.app" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="screenshot_ocr"
+        android:shortcutLongLabel="@string/shortcut_ocr_long"
+        android:shortcutShortLabel="@string/shortcut_ocr_short">
+        <intent
+            android:action="com.momentledger.app.action.SCREENSHOT_OCR"
+            android:targetClass="com.momentledger.app.MainActivity"
+            android:targetPackage="com.momentledger.app" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="import_bill"
+        android:shortcutLongLabel="@string/shortcut_import_long"
+        android:shortcutShortLabel="@string/shortcut_import_short">
+        <intent
+            android:action="com.momentledger.app.action.IMPORT_BILL"
+            android:targetClass="com.momentledger.app.MainActivity"
+            android:targetPackage="com.momentledger.app" />
+    </shortcut>
+
+</shortcuts>
